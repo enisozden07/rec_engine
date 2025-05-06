@@ -131,7 +131,6 @@ pip install -r requirements-api.txt
 2. Start the FastAPI server:
 
    ```bash
-   cd /home/ens/projects/loyalty-recom
    uvicorn api.app:app --reload --port 8000
    ```
 
