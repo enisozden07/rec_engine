@@ -53,7 +53,7 @@ class SSEPTHandler(ModelHandler):
         result["model"] = model
 
         # Load ID mappings
-        mapping_path = os.path.join(model_path, model_type, "mappings/id_maps.json")
+        mapping_path = os.path.join(model_path, "mappings/id_maps.json")
         with open(mapping_path, "r") as f:
             mappings = json.load(f)
             

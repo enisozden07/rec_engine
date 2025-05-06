@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
-from .models import RecommendationRequest, RecommendationResponse
+from .models import RecommendationRequest, RecommendationResponse, ModelRecommendations
 from .recommendation import RecommendationEngine
 from .config import Settings
 
