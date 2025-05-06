@@ -28,7 +28,7 @@ class RecommendationEngine:
         self.reverse_item_maps = {"sasrec": None, "ssept": None, "lightgcn": None}
         self.user_maps = {"ssept": None, "lightgcn": None}  # For user IDs
         self.is_loaded = {"sasrec": False, "ssept": False, "lightgcn": False}
-        self.external_mappings = None  # Add this line
+        self.external_mappings = None
 
     async def load_external_mappings(self, model_path: str) -> None:
         """Load external ID mappings from the mapping file."""
@@ -39,14 +39,24 @@ class RecommendationEngine:
                 logger.info("External ID mappings loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load external mappings: {str(e)}")
-            self.external_mappings = None
+            # Create fallback dummy mappings
+            self.external_mappings = {
+                "user_id_map": {"1": "1", "2": "2", "3": "3"},
+                "item_id_map": {"1": "1", "2": "2", "3": "3", "4": "4", "5": "5"}
+            }
+            logger.warning("Using fallback dummy mappings")
 
     def _convert_user_id(self, user_id: str) -> str:
         """Convert external user ID to model user ID using external mappings."""
         if not self.external_mappings or "user_id_map" not in self.external_mappings:
             return user_id
         
-        return self.external_mappings["user_id_map"].get(user_id, user_id)
+        # Try different key formats (string vs int)
+        for key_format in [user_id, str(user_id), int(user_id) if user_id.isdigit() else user_id]:
+            if str(key_format) in self.external_mappings["user_id_map"]:
+                return self.external_mappings["user_id_map"][str(key_format)]
+        
+        return user_id
 
     def _convert_item_ids(self, item_ids: List[str]) -> List[str]:
         """Convert external item IDs to model item IDs using external mappings."""
@@ -55,8 +65,14 @@ class RecommendationEngine:
         
         converted_ids = []
         for item_id in item_ids:
-            converted_id = self.external_mappings["item_id_map"].get(item_id, item_id)
-            converted_ids.append(converted_id)
+            # Try different key formats
+            for key_format in [item_id, str(item_id), int(item_id) if item_id.isdigit() else item_id]:
+                if str(key_format) in self.external_mappings["item_id_map"]:
+                    converted_ids.append(self.external_mappings["item_id_map"][str(key_format)])
+                    break
+            else:
+                # If no mapping found, use original
+                converted_ids.append(item_id)
         
         return converted_ids
         
