@@ -1,3 +1,9 @@
+# Include models and api folders despite other patterns
+!models/
+!models/**
+!api/
+!api/**
+
 # Data files
 data/
 *.csv
