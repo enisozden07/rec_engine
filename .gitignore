@@ -1,7 +1,3 @@
-# Include models and api folders despite other patterns
-!models/
-!models/**
-
 # Data files
 data/
 *.csv
@@ -68,3 +64,11 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Include models and api folders despite other patterns
+!models/
+!models/**
+!models/**/*.h5
+!models/**/*.pb
+!models/**/*.ckpt*
+!models/**/*.pt
