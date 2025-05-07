@@ -10,3 +10,8 @@ class ModelHandler(ABC):
     def load_model_files(self, model_path: str, model_type: str) -> Dict[str, Any]:
         """Load model files from disk."""
         pass
+    
+    @abstractmethod
+    def predict(self, model, inputs) -> Any:
+        """Make predictions with the loaded model."""
+        pass

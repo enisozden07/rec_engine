@@ -23,93 +23,73 @@ class LightGCNHandler(ModelHandler):
         """Load LightGCN model files from disk - only embeddings needed."""
         result = {}
         
-        # Load user embeddings
-        user_embed_path = os.path.join(model_path, model_type, "user_embeddings.csv")
-        user_embeddings = pd.read_csv(user_embed_path)
+        # Load embeddings
+        user_embeddings = pd.read_csv(os.path.join(model_path, model_type, "user_embeddings.csv"))
+        item_embeddings = pd.read_csv(os.path.join(model_path, model_type, "item_embeddings.csv"))
         
-        # Load item embeddings
-        item_embed_path = os.path.join(model_path, model_type, "item_embeddings.csv")
-        item_embeddings = pd.read_csv(item_embed_path)
-        
-        
-        # Determine ID columns - assume first column contains IDs if 'user_id'/'item_id' not present
+        # Determine ID columns
         user_id_col = 'user_id' if 'user_id' in user_embeddings.columns else user_embeddings.columns[0]
         item_id_col = 'item_id' if 'item_id' in item_embeddings.columns else item_embeddings.columns[0]
         
-        
-        # Create user and item maps
-        user_map = {str(user_id): idx for idx, user_id in enumerate(user_embeddings[user_id_col].values)}
-        item_map = {str(item_id): idx for idx, item_id in enumerate(item_embeddings[item_id_col].values)}
+        # Set index on embeddings for faster lookup
+        if not user_embeddings.index.name:
+            user_embeddings.set_index(user_id_col, inplace=True)
+        if not item_embeddings.index.name:
+            item_embeddings.set_index(item_id_col, inplace=True)
         
         # Create model (a simple wrapper for embeddings)
-        model = LightGCNEmbeddings(user_embeddings, item_embeddings)
-        
-        # Return all components
-        result["model"] = model
-        result["item_map"] = item_map
-        result["reverse_item_map"] = {v: k for k, v in item_map.items()}
-        result["user_map"] = user_map
+        result["model"] = LightGCNEmbeddings(user_embeddings, item_embeddings)
         
         return result
+    
+    def predict(self, model, user_idx):
+        """Calculate scores for all items for a given user."""
+        try:
+            # Get user embedding
+            u_vec = (model.user_embeddings.iloc[user_idx].values 
+                    if isinstance(user_idx, (int, np.integer))
+                    else model.user_embeddings.loc[user_idx].values)
+            
+            # Ensure it's a 1D array
+            if len(u_vec.shape) > 1:
+                u_vec = u_vec.flatten()
+                
+            # Get item embeddings and compute dot product
+            item_embeddings = model.item_embeddings.values
+            if item_embeddings.shape[1] != u_vec.shape[0]:
+                item_embeddings = item_embeddings[:, 1:]
+                
+            # Calculate scores using dot product
+            scores = np.dot(item_embeddings, u_vec)
+            
+            return scores
+            
+        except Exception as e:
+            logger.error(f"Prediction error: {str(e)}")
+            return np.random.rand(len(model.item_embeddings))
 
 async def get_recommendations(
     model,
-    reverse_item_map,
-    user_map,
-    user_id: str,
+    user_idx: int,
     num_recommendations: int = 5,
     include_categories: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
-    """Generate LightGCN recommendations based on user ID only."""
-    # Convert user_id to embedding index - try different formats since IDs might be stored differently
-    original_user_id = user_id
-    user_found = False
+    """Generate LightGCN recommendations based on user index."""
+    # Get predictions
+    scores = LightGCNHandler().predict(model, user_idx)
     
-    # Try different formats to find the user
-    for user_id_format in [user_id, str(user_id), int(user_id) if user_id.isdigit() else user_id]:
-        if user_id_format in user_map:
-            user_id = user_id_format
-            user_found = True
-            break
+    # Get top items
+    top_indices = np.argsort(-scores)[:num_recommendations*2]
     
-    if not user_found:
-        logger.warning(f"User {original_user_id} not found in LightGCN model - trying fallback")
-        # Fallback: Return empty list
-        return []
-    
-    user_idx = user_map[user_id]
-    
-    try:
-        # Get user embedding (skip user_id column)
-        user_embedding = model.user_embeddings.iloc[user_idx, 1:].values
-        
-        # Compute dot product with all item embeddings (skip item_id column)
-        item_embeddings = model.item_embeddings.iloc[:, 1:].values  
-        scores = np.dot(user_embedding, item_embeddings.T)
-    except Exception as e:
-        logger.error(f"Error during LightGCN recommendation: {str(e)}")
-        # Fallback: Generate random scores
-        item_count = len(reverse_item_map)
-        scores = np.random.random(item_count)
-    
-    # Get top-k items
-    top_k_indices = np.argsort(-scores)[:num_recommendations]
-    
-    # Map back to item IDs
+    # Build recommendations with indices only
     recommendations = []
-    for idx in top_k_indices:
+    for idx in top_indices:
         if len(recommendations) >= num_recommendations:
             break
-            
-        if idx not in reverse_item_map:
-            continue
-            
-        item_id = reverse_item_map[idx]
+        
         recommendations.append({
-            "product_id": item_id,
-            "score": float(scores[idx]),
-            "product_name": f"Product {item_id}",  # Add placeholder name
-            "category": "unknown"  # Add category if available
+            "index": int(idx),
+            "score": float(scores[idx])
         })
     
     return recommendations

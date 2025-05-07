@@ -46,50 +46,28 @@ class SASRecHandler(ModelHandler):
         ckpt = tf.train.Checkpoint(model=model)
         ckpt.restore(checkpoint_path).expect_partial()
         
-        # Store the model in the result dictionary
+        # Store the model and config
         result["model"] = model
-
-        # Load ID mappings
-        mapping_path = os.path.join(model_path, "mappings/id_maps.json")
-        with open(mapping_path, "r") as f:
-            mappings = json.load(f)
-            # Adjust keys based on actual mapping structure
-            item_map = None
-            if "item_id_map" in mappings:
-                item_map = mappings["item_id_map"]
-            elif "item_id_to_idx" in mappings:
-                item_map = mappings["item_id_to_idx"]
-            else:
-                # Try to find appropriate mapping key
-                for key in mappings:
-                    if "item" in key.lower() and "id" in key.lower():
-                        item_map = mappings[key]
-                        break
-            
-            # Create reverse mapping
-            reverse_item_map = {v: k for k, v in item_map.items()}
-            
-            # Add to result dictionary
-            result["item_map"] = item_map
-            result["reverse_item_map"] = reverse_item_map
+        result["config"] = config
         
         return result
+    
+    def predict(self, model, inputs):
+        """Make predictions with the loaded model."""
+        if hasattr(model, 'call') and callable(model.call):
+            # For newer TensorFlow models that use the call method
+            return model.call(inputs, training=False)
+        else:
+            # Try the standard predict with dictionary input
+            return model({'input_seq': inputs}, training=False)
 
 async def get_recommendations(
     model,
-    item_map,
-    reverse_item_map,
-    basket_items: List[str], 
+    basket_indices: List[int], 
     num_recommendations: int = 5,
     include_categories: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
-    """Generate SASRec recommendations based on basket items."""
-    # Convert basket items to indices
-    basket_indices = []
-    for item_id in basket_items:
-        if item_id in item_map:
-            basket_indices.append(item_map[item_id])
-    
+    """Generate SASRec recommendations based on basket item indices."""
     if not basket_indices:
         logger.warning("No valid basket items found for recommendation")
         return []
@@ -105,32 +83,22 @@ async def get_recommendations(
     # Convert to tensor
     seq_tensor = tf.constant(seq, dtype=tf.int32)
     
-    try:
-        # Updated: Call predict differently based on the model's expected inputs
-        if hasattr(model, 'call') and callable(model.call):
-            # For newer TensorFlow models that use the call method
-            predictions = model.call(seq_tensor, training=False)
-        else:
-            # Try the standard predict with dictionary input
-            predictions = model({'input_seq': seq_tensor}, training=False)
-        
-        # Handle different output formats
-        if isinstance(predictions, dict) and 'output' in predictions:
-            scores = predictions['output'][0]
-        elif isinstance(predictions, tuple) and len(predictions) > 0:
-            scores = predictions[0][0]
-        else:
-            scores = predictions[0]
-    except Exception as e:
-        logger.error(f"Error during SASRec prediction: {str(e)}")
-        # Fallback: Generate random scores for demonstration
-        item_count = getattr(model, "item_num", 100)
-        scores = np.random.random(item_count)
+    # Get model handler and make prediction
+    model_handler = SASRecHandler()
+    predictions = model_handler.predict(model, seq_tensor)
+    
+    # Handle different output formats
+    if isinstance(predictions, dict) and 'output' in predictions:
+        scores = predictions['output'][0]
+    elif isinstance(predictions, tuple) and len(predictions) > 0:
+        scores = predictions[0][0]
+    else:
+        scores = predictions[0]
     
     # Get top-k items
     top_k_indices = np.argsort(-scores)[:num_recommendations*2]
     
-    # Map back to item IDs
+    # Build recommendations
     recommendations = []
     for idx in top_k_indices:
         if len(recommendations) >= num_recommendations:
@@ -139,17 +107,10 @@ async def get_recommendations(
         # Skip items already in basket
         if idx in basket_indices:
             continue
-            
-        # Skip if not in reverse mapping
-        if idx not in reverse_item_map:
-            continue
-            
-        item_id = reverse_item_map[idx]
+        
         recommendations.append({
-            "product_id": item_id,
-            "score": float(scores[idx]),
-            "product_name": f"Product {item_id}",  # Add placeholder name
-            "category": "unknown"
+            "index": int(idx),
+            "score": float(scores[idx])
         })
     
     return recommendations
