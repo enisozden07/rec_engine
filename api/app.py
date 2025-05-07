@@ -7,7 +7,14 @@ from .recommendation import RecommendationEngine
 from .config import Settings
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG,  # Or logging.INFO for less verbose output
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),  # Log to console
+        # logging.FileHandler("recommendations.log")  # Optionally log to a file
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Load settings

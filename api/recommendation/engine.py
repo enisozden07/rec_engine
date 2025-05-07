@@ -32,6 +32,7 @@ class RecommendationEngine:
     async def load_mappings(self, model_path: str) -> None:
         """Load mappings from CSV files."""
         mappings_dir = os.path.join(model_path, "mappings")
+        logger.info(f"Attempting to load mappings from: {mappings_dir}")
         
         try:
             self.item_id_to_idx, self.idx_to_item_id, self.user_id_to_idx, self.idx_to_user_id = \
@@ -54,10 +55,12 @@ class RecommendationEngine:
     
     async def load_model(self, model_path: str, models_to_load: List[str] = ["sasrec"]) -> None:
         """Load the specified recommendation models and mappings."""
+        logger.info(f"Attempting to load models: {models_to_load} from path: {model_path}")
         # Load mappings first - shared across all models
         await self.load_mappings(model_path)
 
         for model_type in models_to_load:
+            logger.info(f"Loading model type: {model_type}")
             try:
                 # Get the appropriate model handler
                 model_handler = get_model_handler(model_type)
@@ -81,14 +84,21 @@ class RecommendationEngine:
         include_categories: Optional[List[str]] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Generate and combine recommendations from applicable models."""
+        logger.info(
+            f"get_all_recommendations called with user_id: {user_id}, "
+            f"basket_items: {basket_items}, num_recommendations: {num_recommendations}, "
+            f"include_categories: {include_categories}"
+        )
         # Map IDs at the entry point
         mapped_user_id = map_user_id(user_id, self.user_id_to_idx) if user_id else None
         mapped_basket_ids = map_item_ids(basket_items, self.item_id_to_idx)
+        logger.debug(f"Mapped user_id: {mapped_user_id}, Mapped basket_ids: {mapped_basket_ids}")
         
         results = {}
         
         # Get SASRec recommendations (basket-only)
         if self.is_loaded["sasrec"] and mapped_basket_ids:
+            logger.info("Getting SASRec recommendations.")
             try:
                 from .models.sasrec import get_recommendations
                 raw_recs = await get_recommendations(
@@ -99,15 +109,22 @@ class RecommendationEngine:
                 )
                 
                 # Map indices back to original IDs
+                logger.debug(f"Raw SASRec recommendations: {raw_recs}")
                 results["sasrec"] = map_recommendations_to_original_ids(raw_recs, self.idx_to_item_id)
+                logger.info(f"Processed SASRec recommendations count: {len(results['sasrec'])}")
             except Exception as e:
                 logger.error(f"Error getting SASRec recommendations: {str(e)}")
                 results["sasrec"] = []
+        elif not self.is_loaded["sasrec"]:
+            logger.warning("SASRec model not loaded. Skipping SASRec recommendations.")
+        elif not mapped_basket_ids:
+            logger.info("No mapped basket items for SASRec. Skipping SASRec recommendations.")
         
         # If user_id is provided, get SSEPT and LightGCN recommendations
         if mapped_user_id is not None:
             # Get SSEPT recommendations (user + basket)
             if self.is_loaded["ssept"] and mapped_basket_ids:
+                logger.info("Getting SSEPT recommendations.")
                 try:
                     from .models.ssept import get_recommendations
                     raw_recs = await get_recommendations(
@@ -119,13 +136,20 @@ class RecommendationEngine:
                     )
                     
                     # Map indices back to original IDs
+                    logger.debug(f"Raw SSEPT recommendations: {raw_recs}")
                     results["ssept"] = map_recommendations_to_original_ids(raw_recs, self.idx_to_item_id)
+                    logger.info(f"Processed SSEPT recommendations count: {len(results['ssept'])}")
                 except Exception as e:
                     logger.error(f"Error getting SSEPT recommendations: {str(e)}")
                     results["ssept"] = []
+            elif not self.is_loaded["ssept"]:
+                logger.warning("SSEPT model not loaded. Skipping SSEPT recommendations.")
+            elif not mapped_basket_ids:
+                logger.info("No mapped basket items for SSEPT. Skipping SSEPT recommendations.")
             
             # Get LightGCN recommendations (user-only)
             if self.is_loaded["lightgcn"]:
+                logger.info("Getting LightGCN recommendations.")
                 try:
                     from .models.lightgcn import get_recommendations
                     raw_recs = await get_recommendations(
@@ -136,9 +160,16 @@ class RecommendationEngine:
                     )
                     
                     # Map indices back to original IDs
+                    logger.debug(f"Raw LightGCN recommendations: {raw_recs}")
                     results["lightgcn"] = map_recommendations_to_original_ids(raw_recs, self.idx_to_item_id)
+                    logger.info(f"Processed LightGCN recommendations count: {len(results['lightgcn'])}")
                 except Exception as e:
                     logger.error(f"Error getting LightGCN recommendations: {str(e)}")
                     results["lightgcn"] = []
+            elif not self.is_loaded["lightgcn"]:
+                logger.warning("LightGCN model not loaded. Skipping LightGCN recommendations.")
+        elif user_id is not None: # mapped_user_id is None but original user_id was provided
+            logger.warning(f"User ID {user_id} not found in mappings. Skipping user-based recommendations (SSEPT, LightGCN).")
         
+        logger.info(f"Final combined recommendations: {results}")
         return results
