@@ -5,8 +5,8 @@ class ProductRecommendation(BaseModel):
     """Model for a product recommendation."""
     product_id: str
     score: float
-    product_name: str
-    category: str
+    product_name: Optional[str] = None  # Optional product name
+    category: Optional[str] = None  # Optional category field
 
 class RecommendationRequest(BaseModel):
     """Request model for recommendations."""
