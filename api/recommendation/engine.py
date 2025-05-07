@@ -1,7 +1,6 @@
 """Main recommendation engine implementation."""
 
 import os
-import pandas as pd
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import asyncio
@@ -9,6 +8,7 @@ from typing import List, Optional, Dict, Any
 import logging
 
 from .models import get_model_handler
+from .utils import load_id_mappings, map_user_id, map_item_ids, map_recommendations_to_original_ids
 
 logger = logging.getLogger(__name__)
 
@@ -31,69 +31,27 @@ class RecommendationEngine:
 
     async def load_mappings(self, model_path: str) -> None:
         """Load mappings from CSV files."""
+        mappings_dir = os.path.join(model_path, "mappings")
+        
         try:
-            mappings_dir = os.path.join(model_path, "mappings")
+            self.item_id_to_idx, self.idx_to_item_id, self.user_id_to_idx, self.idx_to_user_id = \
+                load_id_mappings(mappings_dir)
             
-            # Load user mapping
-            user_map_path = os.path.join(mappings_dir, "user_mapping.csv")
-            if os.path.exists(user_map_path):
-                user_df = pd.read_csv(user_map_path)
-                if len(user_df.columns) >= 2:
-                    # Assuming first column is original ID and second is index
-                    orig_id_col = user_df.columns[0]
-                    idx_col = user_df.columns[1]
-                    
-                    # Create mappings in both directions
-                    self.user_id_to_idx = {str(row[orig_id_col]): int(row[idx_col]) 
-                                         for _, row in user_df.iterrows()}
-                    self.idx_to_user_id = {int(row[idx_col]): str(row[orig_id_col]) 
-                                         for _, row in user_df.iterrows()}
-                    logger.info(f"Loaded user mappings from {user_map_path}")
+            # Log the size of the mappings for debugging
+            logger.info(f"Loaded {len(self.item_id_to_idx)} item mappings and {len(self.user_id_to_idx)} user mappings")
+            logger.info(f"First few item mappings: {list(self.item_id_to_idx.items())[:5]}")
+            logger.info(f"First few user mappings: {list(self.user_id_to_idx.items())[:5]}")
             
-            # Load item mapping
-            item_map_path = os.path.join(mappings_dir, "item_mappings.csv")
-            if os.path.exists(item_map_path):
-                item_df = pd.read_csv(item_map_path)
-                if len(item_df.columns) >= 2:
-                    # Assuming first column is original ID and second is index
-                    orig_id_col = item_df.columns[0]
-                    idx_col = item_df.columns[1]
-                    
-                    # Create mappings in both directions
-                    self.item_id_to_idx = {str(row[orig_id_col]): int(row[idx_col]) 
-                                         for _, row in item_df.iterrows()}
-                    self.idx_to_item_id = {int(row[idx_col]): str(row[orig_id_col]) 
-                                         for _, row in item_df.iterrows()}
-                    logger.info(f"Loaded item mappings from {item_map_path}")
-                    
-        except Exception as e:
-            logger.error(f"Failed to load mappings from CSV: {str(e)}")
-        
-    def map_user_id(self, user_id: str) -> Optional[int]:
-        """Map external user ID to internal index."""
-        if not user_id:
-            return None
-            
-        # Try different formats
-        for id_format in [user_id, str(user_id), int(user_id) if user_id.isdigit() else None]:
-            if id_format is not None and str(id_format) in self.user_id_to_idx:
-                return self.user_id_to_idx[str(id_format)]
+            # Verify reverse mappings match
+            if len(self.item_id_to_idx) != len(self.idx_to_item_id):
+                logger.warning(f"Item mapping size mismatch: {len(self.item_id_to_idx)} != {len(self.idx_to_item_id)}")
                 
-        logger.warning(f"User ID {user_id} not found in mappings")
-        return None
+            if len(self.user_id_to_idx) != len(self.idx_to_user_id):
+                logger.warning(f"User mapping size mismatch: {len(self.user_id_to_idx)} != {len(self.idx_to_user_id)}")
         
-    def map_item_ids(self, item_ids: List[str]) -> List[int]:
-        """Map external item IDs to internal indices."""
-        mapped_ids = []
-        for item_id in item_ids:
-            # Try different formats
-            for id_format in [item_id, str(item_id), int(item_id) if item_id.isdigit() else None]:
-                if id_format is not None and str(id_format) in self.item_id_to_idx:
-                    mapped_ids.append(self.item_id_to_idx[str(id_format)])
-                    break
-        
-        return mapped_ids
-        
+        except Exception as e:
+            logger.error(f"Error loading mappings: {str(e)}")
+    
     async def load_model(self, model_path: str, models_to_load: List[str] = ["sasrec"]) -> None:
         """Load the specified recommendation models and mappings."""
         # Load mappings first - shared across all models
@@ -124,8 +82,8 @@ class RecommendationEngine:
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Generate and combine recommendations from applicable models."""
         # Map IDs at the entry point
-        mapped_user_id = self.map_user_id(user_id) if user_id else None
-        mapped_basket_ids = self.map_item_ids(basket_items)
+        mapped_user_id = map_user_id(user_id, self.user_id_to_idx) if user_id else None
+        mapped_basket_ids = map_item_ids(basket_items, self.item_id_to_idx)
         
         results = {}
         
@@ -141,15 +99,7 @@ class RecommendationEngine:
                 )
                 
                 # Map indices back to original IDs
-                results["sasrec"] = [
-                    {
-                        "product_id": self.idx_to_item_id.get(int(rec["index"]), str(rec["index"])),
-                        "score": rec["score"],
-                        "product_name": f"Product {self.idx_to_item_id.get(int(rec['index']), str(rec['index']))}",
-                        "category": rec.get("category", "unknown")
-                    }
-                    for rec in raw_recs
-                ]
+                results["sasrec"] = map_recommendations_to_original_ids(raw_recs, self.idx_to_item_id)
             except Exception as e:
                 logger.error(f"Error getting SASRec recommendations: {str(e)}")
                 results["sasrec"] = []
@@ -169,15 +119,7 @@ class RecommendationEngine:
                     )
                     
                     # Map indices back to original IDs
-                    results["ssept"] = [
-                        {
-                            "product_id": self.idx_to_item_id.get(int(rec["index"]), str(rec["index"])),
-                            "score": rec["score"],
-                            "product_name": f"Product {self.idx_to_item_id.get(int(rec['index']), str(rec['index']))}",
-                            "category": rec.get("category", "unknown")
-                        }
-                        for rec in raw_recs
-                    ]
+                    results["ssept"] = map_recommendations_to_original_ids(raw_recs, self.idx_to_item_id)
                 except Exception as e:
                     logger.error(f"Error getting SSEPT recommendations: {str(e)}")
                     results["ssept"] = []
@@ -194,15 +136,7 @@ class RecommendationEngine:
                     )
                     
                     # Map indices back to original IDs
-                    results["lightgcn"] = [
-                        {
-                            "product_id": self.idx_to_item_id.get(int(rec["index"]), str(rec["index"])),
-                            "score": rec["score"], 
-                            "product_name": f"Product {self.idx_to_item_id.get(int(rec['index']), str(rec['index']))}",
-                            "category": rec.get("category", "unknown")
-                        }
-                        for rec in raw_recs
-                    ]
+                    results["lightgcn"] = map_recommendations_to_original_ids(raw_recs, self.idx_to_item_id)
                 except Exception as e:
                     logger.error(f"Error getting LightGCN recommendations: {str(e)}")
                     results["lightgcn"] = []

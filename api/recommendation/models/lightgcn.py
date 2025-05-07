@@ -25,17 +25,7 @@ class LightGCNHandler(ModelHandler):
         
         # Load embeddings
         user_embeddings = pd.read_csv(os.path.join(model_path, model_type, "user_embeddings.csv"))
-        item_embeddings = pd.read_csv(os.path.join(model_path, model_type, "item_embeddings.csv"))
-        
-        # Determine ID columns
-        user_id_col = 'user_id' if 'user_id' in user_embeddings.columns else user_embeddings.columns[0]
-        item_id_col = 'item_id' if 'item_id' in item_embeddings.columns else item_embeddings.columns[0]
-        
-        # Set index on embeddings for faster lookup
-        if not user_embeddings.index.name:
-            user_embeddings.set_index(user_id_col, inplace=True)
-        if not item_embeddings.index.name:
-            item_embeddings.set_index(item_id_col, inplace=True)
+        item_embeddings = pd.read_csv(os.path.join(model_path, model_type, "item_embeddings.csv")) 
         
         # Create model (a simple wrapper for embeddings)
         result["model"] = LightGCNEmbeddings(user_embeddings, item_embeddings)
@@ -45,10 +35,27 @@ class LightGCNHandler(ModelHandler):
     def predict(self, model, user_idx):
         """Calculate scores for all items for a given user."""
         try:
+            # Ensure user_idx is an integer
+            if not isinstance(user_idx, (int, np.integer)):
+                user_idx = int(user_idx)
+                
             # Get user embedding
-            u_vec = (model.user_embeddings.iloc[user_idx].values 
-                    if isinstance(user_idx, (int, np.integer))
-                    else model.user_embeddings.loc[user_idx].values)
+            if hasattr(model.user_embeddings, 'loc') and user_idx in model.user_embeddings.index:
+                # If the index exists, get it directly
+                u_vec = model.user_embeddings.loc[user_idx].values
+            else:
+                # Try to find the user in the data frame
+                user_id_col = model.user_embeddings.index.name or model.user_embeddings.columns[0]
+                user_data = model.user_embeddings[model.user_embeddings[user_id_col] == user_idx]
+                
+                if user_data.empty:
+                    logger.warning(f"User index {user_idx} not found in embeddings")
+                    # Return random scores for all items as fallback
+                    return np.random.rand(len(model.item_embeddings))
+                    
+                # Get embedding columns (exclude ID column)
+                embedding_cols = [col for col in user_data.columns if col != user_id_col]
+                u_vec = user_data[embedding_cols].values.flatten()
             
             # Ensure it's a 1D array
             if len(u_vec.shape) > 1:
@@ -56,8 +63,10 @@ class LightGCNHandler(ModelHandler):
                 
             # Get item embeddings and compute dot product
             item_embeddings = model.item_embeddings.values
-            if item_embeddings.shape[1] != u_vec.shape[0]:
-                item_embeddings = item_embeddings[:, 1:]
+            if len(item_embeddings.shape) > 1 and item_embeddings.shape[1] != u_vec.shape[0]:
+                # If dimensions don't match, exclude the ID column or adjust dimensions
+                if item_embeddings.shape[1] > u_vec.shape[0]:
+                    item_embeddings = item_embeddings[:, 1:] if item_embeddings.shape[1] - 1 == u_vec.shape[0] else item_embeddings
                 
             # Calculate scores using dot product
             scores = np.dot(item_embeddings, u_vec)
